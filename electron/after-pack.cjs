@@ -16,7 +16,6 @@ exports.default = async function signIndependentMacBuild(context) {
     identityValidation: false,
     preAutoEntitlements: false,
     preEmbedProvisioningProfile: false,
-    strictVerify: true,
     optionsForFile: () => ({ timestamp: "none" }),
   });
 };
