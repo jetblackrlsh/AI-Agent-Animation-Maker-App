@@ -1,0 +1,74 @@
+{
+  "name": "astral-director",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A Codex-powered portrait animation studio for clear narrated stories.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jetblackrlsh/AI-Agent-Animation-Maker-App.git"
+  },
+  "homepage": "https://github.com/jetblackrlsh/AI-Agent-Animation-Maker-App",
+  "main": "electron/main.cjs",
+  "author": "Astral Director",
+  "releaseDate": "2026-07-17T15:02:37-05:00",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "tsc --noEmit && vite build",
+    "start": "electron .",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tonejs/midi": "^2.0.28",
+    "ffmpeg-static": "^5.2.0",
+    "lucide-react": "^0.468.0",
+    "electron-updater": "^6.6.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sharp": "^0.33.5",
+    "three": "^0.171.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/three": "^0.171.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.astraldirector.studio",
+    "productName": "Astral Director",
+    "artifactName": "Astral-Director-Setup-${version}.${ext}",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/sharp/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "jetblackrlsh",
+      "repo": "AI-Agent-Animation-Maker-App",
+      "releaseType": "release"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
