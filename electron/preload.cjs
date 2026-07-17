@@ -1,8 +1,10 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("astral", {
-  loadProject: () => ipcRenderer.invoke("project:load"),
+  loadProject: (projectId) => ipcRenderer.invoke("project:load", projectId),
   saveProject: (project) => ipcRenderer.invoke("project:save", project),
+  listProjects: () => ipcRenderer.invoke("project:list"),
+  deleteProject: (projectId) => ipcRenderer.invoke("project:delete", projectId),
   generateStory: (request) => ipcRenderer.invoke("codex:story", request),
   generateImage: (request) => ipcRenderer.invoke("image:generate", request),
   listAssets: () => ipcRenderer.invoke("asset:list"),

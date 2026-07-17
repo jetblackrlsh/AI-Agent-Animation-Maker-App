@@ -1,16 +1,14 @@
-name: Release Windows update
+name: Release Windows and Apple Silicon
 
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-
 permissions:
   contents: write
 
 jobs:
-  windows-release:
+  windows-build:
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -28,7 +26,89 @@ jobs:
       - name: Validate production build
         run: npm run build
 
-      - name: Build and publish Windows release
-        run: npx electron-builder --win nsis --publish always
+      - name: Exercise Windows narration and MIDI pipeline
+        run: node scripts/smoke-audio.cjs
+
+      - name: Build Windows x64 release
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Upload Windows release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          if-no-files-found: error
+          path: |
+            dist/Astral-Director-Setup-*.exe
+            dist/Astral-Director-Setup-*.exe.blockmap
+            dist/latest.yml
+
+  macos-arm64-build:
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Confirm native Apple Silicon runner
+        run: |
+          test "$(uname -m)" = "arm64"
+          system_profiler SPHardwareDataType | grep "Chip"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate production build
+        run: npm run build
+
+      - name: Exercise macOS narration and MIDI pipeline
+        run: node scripts/smoke-audio.cjs
+
+      - name: Build native Apple Silicon DMG and updater ZIP
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
+
+      - name: Verify packaged architecture and signature
+        run: |
+          APP="dist/mac-arm64/Astral Director.app"
+          test -d "$APP"
+          file "$APP/Contents/MacOS/Astral Director" | grep "arm64"
+          test "$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")" = "${GITHUB_REF_NAME#v}"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          test -f dist/latest-mac.yml
+
+      - name: Upload Apple Silicon release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-release
+          if-no-files-found: error
+          path: |
+            dist/Astral-Director-*-mac-arm64.dmg
+            dist/Astral-Director-*-mac-arm64.dmg.blockmap
+            dist/Astral-Director-*-mac-arm64.zip
+            dist/Astral-Director-*-mac-arm64.zip.blockmap
+            dist/latest-mac.yml
+
+  publish-release:
+    needs: [windows-build, macos-arm64-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified release files
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create synchronized GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Astral Director ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            release-assets/*

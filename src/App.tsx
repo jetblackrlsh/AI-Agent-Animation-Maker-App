@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Aperture, Box, Captions, ChevronDown, CircleStop, Download, Film, FolderPlus,
-  CloudDownload, Image, Library, LoaderCircle, Music2, Pause, Play, Plus, Save, Sparkles, Stars, WandSparkles,
+  CloudDownload, FolderKanban, FolderOpen, Image, Library, LoaderCircle, Music2, Pause, Pencil, Play, Plus, Save, Sparkles, Stars, Trash2, WandSparkles, X,
 } from "lucide-react";
 import { AnimationStage, type StageHandle } from "./stage/AnimationStage";
 import { demoProject } from "./demo";
-import type { AnimationProject, AppInfo, AssetKind, AudioResult, LibraryAsset, StoryScene, UpdateStatus } from "./types";
+import type { AnimationProject, AppInfo, AssetKind, AudioResult, LibraryAsset, ProjectSummary, StoryScene, UpdateStatus } from "./types";
 
 const STATUS_LABELS: Record<string, string> = {
   "starting-codex-app-server": "Opening Codex",
@@ -46,6 +46,30 @@ function normalizeProject(raw: Partial<AnimationProject>, prompt: string): Anima
         sfx: Array.isArray(scene.sfx) ? scene.sfx : [],
       };
     }),
+  };
+}
+
+function blankProject(): AnimationProject {
+  const now = Date.now();
+  return {
+    id: `project-${now}`,
+    title: "Untitled Project",
+    logline: "A new portrait story ready for your direction.",
+    prompt: "",
+    updatedAt: new Date(now).toISOString(),
+    assets: [],
+    scenes: [{
+      id: `scene-1-${now}`,
+      title: "Opening scene",
+      duration: 6,
+      narration: "Describe what happens, then create a scene plan.",
+      caption: "Describe what happens, then create a scene plan.",
+      backgroundPrompt: "A luminous cosmic night sky with a clear portrait composition, no text",
+      characters: [],
+      objects: [],
+      musicMood: "gentle cosmic beginning",
+      sfx: [],
+    }],
   };
 }
 
@@ -106,8 +130,11 @@ export default function App() {
   const [library, setLibrary] = useState<LibraryAsset[]>([]);
   const [audio, setAudio] = useState<(AudioResult & { musicUrl: string; narrationUrl: string; sfxUrl: string }) | null>(null);
   const [clock, setClock] = useState(() => formatHuntsvilleClock(new Date()));
-  const [appInfo, setAppInfo] = useState<AppInfo>({ version: "1.0.0", releaseDate: "2026-07-17T15:02:37-05:00", repository: "https://github.com/jetblackrlsh/AI-Agent-Animation-Maker-App", packaged: false });
+  const [appInfo, setAppInfo] = useState<AppInfo>({ version: "1.1.0", releaseDate: "2026-07-17T16:47:59-05:00", repository: "https://github.com/jetblackrlsh/AI-Agent-Animation-Maker-App", packaged: false });
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle", message: "Check for updates" });
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [renameTitle, setRenameTitle] = useState(demoProject.title);
   const stageRef = useRef<StageHandle>(null);
   const audioPlayers = useRef<HTMLAudioElement[]>([]);
 
@@ -121,10 +148,11 @@ export default function App() {
 
   useEffect(() => {
     if (!window.astral) return;
-    Promise.all([window.astral.loadProject(), window.astral.listAssets(), window.astral.getAppInfo()]).then(([saved, assets, info]) => {
+    Promise.all([window.astral.loadProject(), window.astral.listAssets(), window.astral.getAppInfo(), window.astral.listProjects()]).then(([saved, assets, info, savedProjects]) => {
       if (saved?.scenes?.length) { setProject(saved); setPrompt(saved.prompt || ""); }
       setLibrary(assets);
       setAppInfo(info);
+      setProjects(savedProjects);
     }).catch(() => setStatus("Loaded the starter project"));
     const stopGenerationListener = window.astral.onGenerationStatus((next) => setStatus(STATUS_LABELS[next] || next.replaceAll("-", " ")));
     const stopUpdateListener = window.astral.onUpdateStatus((next) => { setUpdateStatus(next); setStatus(next.message); });
@@ -138,9 +166,14 @@ export default function App() {
 
   useEffect(() => {
     if (!window.astral) return;
-    const timer = setTimeout(() => window.astral.saveProject({ ...project, updatedAt: new Date().toISOString() }).catch(() => undefined), 700);
+    const timer = setTimeout(() => window.astral.saveProject({ ...project, updatedAt: new Date().toISOString() })
+      .then(() => window.astral.listProjects())
+      .then(setProjects)
+      .catch(() => undefined), 700);
     return () => clearTimeout(timer);
   }, [project]);
+
+  useEffect(() => setRenameTitle(project.title), [project.id, project.title]);
 
   useEffect(() => () => {
     if (audio) [audio.musicUrl, audio.narrationUrl, audio.sfxUrl].forEach(URL.revokeObjectURL);
@@ -149,6 +182,56 @@ export default function App() {
   const updateScene = (patch: Partial<StoryScene>) => {
     setProject((current) => ({ ...current, scenes: current.scenes.map((scene, index) => index === selectedScene ? { ...scene, ...patch } : scene), updatedAt: new Date().toISOString() }));
     setAudio(null);
+  };
+
+  const switchToProject = (next: AnimationProject) => {
+    audioPlayers.current.forEach((player) => player.pause());
+    setIsPlaying(false);
+    setAudio(null);
+    setProject(next);
+    setPrompt(next.prompt || "");
+    setSelectedScene(0);
+    setCurrentTime(0);
+    setRenameTitle(next.title);
+  };
+
+  const createNewProject = async () => {
+    const next = blankProject();
+    await window.astral.saveProject(next);
+    switchToProject(next);
+    setProjects(await window.astral.listProjects());
+    setProjectMenuOpen(false);
+    setStatus("New project created — describe your story on the left");
+  };
+
+  const openProject = async (projectId: string) => {
+    const next = await window.astral.loadProject(projectId);
+    if (!next) return;
+    switchToProject(next);
+    setProjects(await window.astral.listProjects());
+    setProjectMenuOpen(false);
+    setStatus(`${next.title} opened`);
+  };
+
+  const renameProject = async () => {
+    const title = renameTitle.trim();
+    if (!title || title === project.title) return;
+    const next = { ...project, title, updatedAt: new Date().toISOString() };
+    setProject(next);
+    await window.astral.saveProject(next);
+    setProjects(await window.astral.listProjects());
+    setStatus(`Project renamed to ${title}`);
+  };
+
+  const deleteProject = async (summary: ProjectSummary) => {
+    if (!window.confirm(`Delete “${summary.title}”? The project file will be moved to the app’s recoverable archive.`)) return;
+    const result = await window.astral.deleteProject(summary.id);
+    setProjects(result.projects);
+    if (summary.id === project.id) {
+      if (result.nextProject) switchToProject(result.nextProject);
+      else await createNewProject();
+    }
+    setStatus(`${summary.title} moved to the project archive`);
   };
 
   const seek = (time: number) => {
@@ -279,15 +362,30 @@ export default function App() {
     } finally { setBusy(null); }
   };
 
-  const togglePlayback = () => {
-    if (!audio) { void buildSoundtrack(); return; }
+  const togglePlayback = async () => {
     if (isPlaying) {
       audioPlayers.current.forEach((player) => player.pause());
       setIsPlaying(false);
-    } else {
-      audioPlayers.current.forEach((player) => { player.currentTime = currentTime; void player.play().catch(() => undefined); });
-      setIsPlaying(true);
+      setStatus("Preview paused");
+      return;
     }
+    let readyAudio = audio;
+    if (!readyAudio) readyAudio = await buildSoundtrack();
+    if (!readyAudio) return;
+    const startAt = currentTime >= readyAudio.totalDuration - 0.05 ? 0 : currentTime;
+    if (startAt === 0) seek(0);
+    await Promise.all(audioPlayers.current.map((player) => new Promise<void>((resolve) => {
+      if (player.readyState >= 1) { resolve(); return; }
+      const finish = () => resolve();
+      player.addEventListener("loadedmetadata", finish, { once: true });
+      window.setTimeout(finish, 1500);
+      player.load();
+    })));
+    audioPlayers.current.forEach((player) => { try { player.currentTime = startAt; } catch { /* start at the media default */ } });
+    const results = await Promise.allSettled(audioPlayers.current.map((player) => player.play()));
+    if (results.every((result) => result.status === "rejected")) setStatus("The visual preview is playing, but audio playback was blocked.");
+    else setStatus("Playing narrated preview");
+    setIsPlaying(true);
   };
 
   const exportMp4 = async () => {
@@ -324,7 +422,25 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-lockup"><span className="brand-mark"><Aperture size={18} /></span><div><strong>ASTRAL DIRECTOR</strong><small>CODEX ANIMATION STUDIO</small></div></div>
-        <div className="project-heading"><span>PROJECT</span><strong>{project.title}</strong><span className="saved-indicator"><i /> LOCAL</span></div>
+        <div className="project-heading">
+          <span>PROJECT</span>
+          <button className="project-picker" onClick={() => setProjectMenuOpen((open) => !open)} title="Open project manager"><FolderOpen size={14} /><strong>{project.title}</strong><ChevronDown size={13} /></button>
+          <span className="saved-indicator"><i /> LOCAL</span>
+          {projectMenuOpen && <div className="project-manager">
+            <div className="project-manager-head"><div><FolderKanban size={16} /><span>YOUR PROJECTS</span></div><button onClick={() => setProjectMenuOpen(false)} title="Close"><X size={15} /></button></div>
+            <button className="new-project-button" onClick={createNewProject}><Plus size={16} /> New blank project</button>
+            <form className="rename-project" onSubmit={(event) => { event.preventDefault(); void renameProject(); }}>
+              <label><span>RENAME CURRENT PROJECT</span><div><input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} /><button type="submit" title="Rename project"><Pencil size={14} /></button></div></label>
+            </form>
+            <div className="project-list">
+              {projects.map((savedProject) => <div className={`project-file ${savedProject.id === project.id ? "active" : ""}`} key={savedProject.id}>
+                <button className="project-open" onClick={() => openProject(savedProject.id)} disabled={savedProject.id === project.id}><span>{savedProject.title}</span><small>{savedProject.sceneCount} scene{savedProject.sceneCount === 1 ? "" : "s"} · {new Date(savedProject.updatedAt).toLocaleDateString()}</small></button>
+                <button className="project-delete" onClick={() => deleteProject(savedProject)} title={`Delete ${savedProject.title}`}><Trash2 size={14} /></button>
+              </div>)}
+            </div>
+            <p className="project-archive-note">Deleted projects move to a recoverable local archive.</p>
+          </div>}
+        </div>
         <div className="top-actions">
           <div className="release-meta"><strong>v{appInfo.version}</strong><span>UPDATED {formatReleaseDate(appInfo.releaseDate)} CT</span></div>
           <div className="huntsville-clock"><span>HUNTSVILLE, AL</span><strong>{clock}</strong></div>
@@ -337,7 +453,7 @@ export default function App() {
 
       <main className="workspace">
         <aside className="direction-panel">
-          <div className="panel-kicker"><Stars size={14} /> STORY DIRECTION</div>
+          <div className="panel-kicker-row"><div className="panel-kicker"><Stars size={14} /> STORY DIRECTION</div><button onClick={createNewProject}><Plus size={12} /> NEW PROJECT</button></div>
           <h1>Direct a clear<br /><em>portrait story.</em></h1>
           <label className="field prompt-field"><span>What happens?</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={8} /></label>
           <div className="compact-fields">

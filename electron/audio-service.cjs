@@ -4,7 +4,7 @@ const path = require("path");
 const ffmpegStatic = require("ffmpeg-static");
 
 function ffmpegPath() {
-  const candidate = String(ffmpegStatic || "ffmpeg").replace("app.asar\\", "app.asar.unpacked\\");
+  const candidate = String(ffmpegStatic || "ffmpeg").replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
   return fs.existsSync(candidate) ? candidate : "ffmpeg";
 }
 
@@ -32,6 +32,21 @@ function wavDuration(filePath) {
     offset += 8 + size + (size % 2);
   }
   return byteRate ? dataSize / byteRate : 0;
+}
+
+async function synthesizeSpeech({ textPath, wavPath, synthScript }) {
+  if (process.platform === "win32") {
+    await run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", synthScript, "-TextPath", textPath, "-OutputPath", wavPath]);
+    return;
+  }
+  if (process.platform === "darwin") {
+    const aiffPath = wavPath.replace(/\.wav$/i, ".aiff");
+    await run("/usr/bin/say", ["-f", textPath, "-o", aiffPath]);
+    await run(ffmpegPath(), ["-i", aiffPath, "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", "-y", wavPath]);
+    fs.unlinkSync(aiffPath);
+    return;
+  }
+  throw new Error("Narration synthesis is supported on Windows and macOS.");
 }
 
 function writeWav(filePath, samples, sampleRate = 48000) {
@@ -151,7 +166,7 @@ async function prepareAudio({ project, outputDir, synthScript, onStatus }) {
     const textPath = path.join(outputDir, `scene-${i + 1}.txt`);
     const wavPath = path.join(outputDir, `scene-${i + 1}.wav`);
     fs.writeFileSync(textPath, project.scenes[i].narration || project.scenes[i].caption || "");
-    await run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", synthScript, "-TextPath", textPath, "-OutputPath", wavPath]);
+    await synthesizeSpeech({ textPath, wavPath, synthScript });
     speechPaths.push(wavPath);
     measuredDurations.push(wavDuration(wavPath));
   }

@@ -1,6 +1,6 @@
 {
   "name": "astral-director",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "A Codex-powered portrait animation studio for clear narrated stories.",
   "repository": {
@@ -10,12 +10,13 @@
   "homepage": "https://github.com/jetblackrlsh/AI-Agent-Animation-Maker-App",
   "main": "electron/main.cjs",
   "author": "Astral Director",
-  "releaseDate": "2026-07-17T15:02:37-05:00",
+  "releaseDate": "2026-07-17T16:47:59-05:00",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "build": "tsc --noEmit && vite build",
     "start": "electron .",
     "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --arm64 --publish never",
     "test": "vitest run"
   },
   "dependencies": {
@@ -46,6 +47,7 @@
   "build": {
     "appId": "com.astraldirector.studio",
     "productName": "Astral Director",
+    "icon": "build/icon.png",
     "artifactName": "Astral-Director-Setup-${version}.${ext}",
     "asar": true,
     "files": [
@@ -55,10 +57,33 @@
     ],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**/*",
-      "node_modules/sharp/**/*"
+      "node_modules/sharp/**/*",
+      "electron/scripts/**/*"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64"]
+        }
+      ],
+      "artifactName": "Astral-Director-${version}-mac-arm64.${ext}",
+      "category": "public.app-category.video",
+      "minimumSystemVersion": "14.0",
+      "darkModeSupport": true,
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "publish": {
       "provider": "github",

@@ -9,13 +9,68 @@ const { prepareAudio, exportVideo } = require("./audio-service.cjs");
 let mainWindow;
 const preparedAudio = new Map();
 let updateState = { state: "idle", message: "Check for updates" };
+let macUpdatePath = null;
 
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
 
 function publishUpdateState(next) {
   updateState = { ...updateState, ...next };
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("updater:status", updateState);
+}
+
+function compareVersions(left, right) {
+  const a = String(left).replace(/^v/i, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const b = String(right).replace(/^v/i, "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) > (b[i] || 0)) return 1;
+    if ((a[i] || 0) < (b[i] || 0)) return -1;
+  }
+  return 0;
+}
+
+async function downloadMacUpdate(asset, version) {
+  const destination = path.join(app.getPath("downloads"), path.basename(asset.name));
+  const response = await fetch(asset.browser_download_url, { redirect: "follow", headers: { "User-Agent": "Astral-Director-Updater" } });
+  if (!response.ok || !response.body) throw new Error(`Could not download the macOS update (${response.status}).`);
+  const total = Number(response.headers.get("content-length") || asset.size || 0);
+  const writer = fs.createWriteStream(destination, { flags: "w" });
+  const reader = response.body.getReader();
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (!writer.write(Buffer.from(value))) await new Promise((resolve) => writer.once("drain", resolve));
+      const percent = total ? received / total * 100 : 0;
+      publishUpdateState({ state: "downloading", message: total ? `Downloading ${Math.round(percent)}%` : "Downloading macOS update…", percent, version });
+    }
+  } finally {
+    await new Promise((resolve, reject) => writer.end((error) => error ? reject(error) : resolve()));
+  }
+  macUpdatePath = destination;
+  publishUpdateState({ state: "ready", message: `Open DMG to install v${version}`, version });
+}
+
+async function checkMacUpdates() {
+  publishUpdateState({ state: "checking", message: "Checking GitHub…" });
+  const response = await fetch("https://api.github.com/repos/jetblackrlsh/AI-Agent-Animation-Maker-App/releases/latest", {
+    headers: { "Accept": "application/vnd.github+json", "User-Agent": "Astral-Director-Updater" },
+  });
+  if (!response.ok) throw new Error(`GitHub update check failed (${response.status}).`);
+  const release = await response.json();
+  const version = String(release.tag_name || "").replace(/^v/i, "");
+  if (!version || compareVersions(version, app.getVersion()) <= 0) {
+    publishUpdateState({ state: "current", message: "You’re up to date" });
+    return updateState;
+  }
+  const asset = (release.assets || []).find((item) => /mac-arm64\.dmg$/i.test(item.name));
+  if (!asset) throw new Error(`Release v${version} does not include an Apple Silicon DMG.`);
+  publishUpdateState({ state: "available", message: `Downloading v${version}…`, version });
+  await downloadMacUpdate(asset, version);
+  return updateState;
 }
 
 autoUpdater.on("checking-for-update", () => publishUpdateState({ state: "checking", message: "Checking GitHub…" }));
@@ -29,7 +84,10 @@ function paths() {
   const root = app.getPath("userData");
   return {
     root,
-    project: path.join(root, "current-project.json"),
+    legacyProject: path.join(root, "current-project.json"),
+    projects: path.join(root, "projects"),
+    projectTrash: path.join(root, "project-trash"),
+    appState: path.join(root, "app-state.json"),
     library: path.join(root, "asset-library"),
     audio: path.join(root, "audio"),
     exports: path.join(root, "exports"),
@@ -38,7 +96,7 @@ function paths() {
 
 function ensureAppFolders() {
   const folders = paths();
-  [folders.root, folders.library, folders.audio, folders.exports].forEach((folder) => fs.mkdirSync(folder, { recursive: true }));
+  [folders.root, folders.projects, folders.projectTrash, folders.library, folders.audio, folders.exports].forEach((folder) => fs.mkdirSync(folder, { recursive: true }));
 }
 
 function status(value) {
@@ -50,6 +108,81 @@ function assertProject(project) {
   if (project.scenes.length < 1 || project.scenes.length > 24) throw new Error("A project must have between 1 and 24 scenes.");
   const bytes = Buffer.byteLength(JSON.stringify(project));
   if (bytes > 2_000_000) throw new Error("This project is too large to save.");
+}
+
+function safeProjectId(id) {
+  const value = String(id || "");
+  if (!/^[a-zA-Z0-9_-]{1,100}$/.test(value)) throw new Error("Invalid project identifier.");
+  return value;
+}
+
+function projectPath(id) {
+  return path.join(paths().projects, `${safeProjectId(id)}.json`);
+}
+
+function readAppState() {
+  try { return JSON.parse(fs.readFileSync(paths().appState, "utf8")); } catch { return {}; }
+}
+
+function writeAppState(state) {
+  fs.writeFileSync(paths().appState, JSON.stringify(state, null, 2));
+}
+
+function readProject(id) {
+  const file = projectPath(id);
+  if (!fs.existsSync(file)) return null;
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+}
+
+function listProjects() {
+  ensureAppFolders();
+  const currentId = readAppState().currentProjectId;
+  return fs.readdirSync(paths().projects)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => {
+      try {
+        const project = JSON.parse(fs.readFileSync(path.join(paths().projects, file), "utf8"));
+        return { id: project.id, title: project.title, updatedAt: project.updatedAt, sceneCount: project.scenes?.length || 0, current: project.id === currentId };
+      } catch { return null; }
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+function saveProject(project) {
+  assertProject(project);
+  safeProjectId(project.id);
+  const saved = { ...project, updatedAt: new Date().toISOString() };
+  fs.writeFileSync(projectPath(saved.id), JSON.stringify(saved, null, 2));
+  writeAppState({ ...readAppState(), currentProjectId: saved.id });
+  return saved;
+}
+
+function loadInitialProject() {
+  const state = readAppState();
+  const currentId = state.currentProjectId;
+  if (currentId) {
+    const current = readProject(currentId);
+    if (current) return current;
+  }
+  if (!state.legacyMigrated && fs.existsSync(paths().legacyProject)) {
+    try {
+      const legacy = JSON.parse(fs.readFileSync(paths().legacyProject, "utf8"));
+      if (!legacy.id) legacy.id = `project-${Date.now()}`;
+      const migrated = saveProject(legacy);
+      writeAppState({ ...readAppState(), legacyMigrated: true });
+      return migrated;
+    } catch { /* continue to another saved project */ }
+  }
+  const first = listProjects()[0];
+  if (!first) return null;
+  writeAppState({ ...readAppState(), currentProjectId: first.id });
+  return readProject(first.id);
+}
+
+function packagedFile(filePath) {
+  if (!app.isPackaged) return filePath;
+  return filePath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 }
 
 function dataUrl(filePath) {
@@ -112,10 +245,12 @@ app.whenReady().then(() => {
   ensureAppFolders();
   createWindow();
 
-  ipcMain.handle("project:load", () => {
-    const file = paths().project;
-    if (!fs.existsSync(file)) return null;
-    try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+  ipcMain.handle("project:load", (_event, projectId) => {
+    if (!projectId) return loadInitialProject();
+    const project = readProject(projectId);
+    if (!project) throw new Error("That project could not be found.");
+    writeAppState({ ...readAppState(), currentProjectId: project.id });
+    return project;
   });
   ipcMain.handle("app:info", () => ({
     version: app.getVersion(),
@@ -128,18 +263,39 @@ app.whenReady().then(() => {
       publishUpdateState({ state: "development", message: "Updates work in the installed app" });
       return updateState;
     }
+    if (process.platform === "darwin") return checkMacUpdates();
     await autoUpdater.checkForUpdates();
     return updateState;
   });
   ipcMain.handle("updater:install", () => {
     if (updateState.state !== "ready") return { installed: false };
+    if (process.platform === "darwin") {
+      if (!macUpdatePath || !fs.existsSync(macUpdatePath)) return { installed: false };
+      shell.showItemInFolder(macUpdatePath);
+      void shell.openPath(macUpdatePath);
+      publishUpdateState({ state: "current", message: "DMG opened — drag Astral Director to Applications" });
+      return { installed: true };
+    }
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
     return { installed: true };
   });
   ipcMain.handle("project:save", (_event, project) => {
-    assertProject(project);
-    fs.writeFileSync(paths().project, JSON.stringify(project, null, 2));
-    return { savedAt: new Date().toISOString() };
+    const saved = saveProject(project);
+    return { savedAt: saved.updatedAt };
+  });
+  ipcMain.handle("project:list", () => listProjects());
+  ipcMain.handle("project:delete", (_event, projectId) => {
+    const id = safeProjectId(projectId);
+    const source = projectPath(id);
+    if (fs.existsSync(source)) {
+      const destination = path.join(paths().projectTrash, `${Date.now()}-${id}.json`);
+      fs.renameSync(source, destination);
+    }
+    const remaining = listProjects();
+    const wasCurrent = readAppState().currentProjectId === id;
+    const nextId = wasCurrent ? remaining[0]?.id : readAppState().currentProjectId;
+    writeAppState({ ...readAppState(), currentProjectId: nextId || null });
+    return { nextProject: nextId ? readProject(nextId) : null, projects: listProjects() };
   });
   ipcMain.handle("codex:story", async (_event, request) => {
     if (!request?.prompt || String(request.prompt).length > 12_000) throw new Error("Enter a story request under 12,000 characters.");
@@ -167,7 +323,7 @@ app.whenReady().then(() => {
     assertProject(project);
     const key = safeProjectKey(project);
     const outputDir = path.join(paths().audio, key);
-    const result = await prepareAudio({ project, outputDir, synthScript: path.join(__dirname, "scripts", "synthesize.ps1"), onStatus: status });
+    const result = await prepareAudio({ project, outputDir, synthScript: packagedFile(path.join(__dirname, "scripts", "synthesize.ps1")), onStatus: status });
     preparedAudio.set(key, result);
     return {
       key,

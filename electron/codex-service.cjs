@@ -1,6 +1,8 @@
 const { spawn } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+const readline = require("readline");
 const sharp = require("sharp");
 
 function resolveCodexSpawn() {
@@ -14,6 +16,31 @@ function resolveCodexSpawn() {
       args: [codexJs, "app-server"],
       env: process.versions.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: "1" } : process.env,
     };
+  }
+  if (process.platform === "darwin") {
+    const macJsCandidates = [
+      process.env.CODEX_CLI_JS,
+      path.join(os.homedir(), ".npm-global", "lib", "node_modules", "@openai", "codex", "bin", "codex.js"),
+      "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
+      "/usr/local/lib/node_modules/@openai/codex/bin/codex.js",
+    ].filter(Boolean);
+    const macCodexJs = macJsCandidates.find((candidate) => fs.existsSync(candidate));
+    if (macCodexJs) {
+      return {
+        command: process.execPath,
+        args: [macCodexJs, "app-server"],
+        env: process.versions.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: "1" } : process.env,
+      };
+    }
+    const macBinaryCandidates = [
+      process.env.CODEX_CLI_PATH,
+      "/opt/homebrew/bin/codex",
+      "/usr/local/bin/codex",
+      path.join(os.homedir(), ".local", "bin", "codex"),
+      path.join(os.homedir(), ".npm-global", "bin", "codex"),
+    ].filter(Boolean);
+    const macCodex = macBinaryCandidates.find((candidate) => fs.existsSync(candidate));
+    if (macCodex) return { command: macCodex, args: ["app-server"], env: process.env };
   }
   return { command: "codex", args: ["app-server"], env: process.env };
 }
@@ -100,7 +127,7 @@ function runCodexTurn({ cwd, prompt, baseInstructions, onStatus, timeoutMs = 7 *
     });
 
     onStatus?.("starting-codex-app-server");
-    send("initialize", { clientInfo: { name: "astral-director", version: "0.1.0" } });
+    send("initialize", { clientInfo: { name: "astral-director", version: "1.1.0" } });
     onStatus?.("creating-thread");
     send("thread/start", {
       cwd,
@@ -129,16 +156,64 @@ async function generateStory({ cwd, request, onStatus }) {
   return { ...extractJson(result.text), sourceThreadId: result.threadId };
 }
 
+function findThreadLogs(threadId, lookbackDays = 14) {
+  const sessionsRoot = path.join(os.homedir(), ".codex", "sessions");
+  if (!fs.existsSync(sessionsRoot)) throw new Error(`Codex sessions folder does not exist: ${sessionsRoot}`);
+  const cutoff = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
+  const suffix = `-${threadId}.jsonl`.toLowerCase();
+  const matches = [];
+  const visit = (directory) => {
+    let entries;
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(fullPath);
+      else if (entry.isFile() && entry.name.toLowerCase().endsWith(suffix)) {
+        const stats = fs.statSync(fullPath);
+        if (stats.mtimeMs >= cutoff) matches.push({ path: fullPath, modified: stats.mtimeMs });
+      }
+    }
+  };
+  visit(sessionsRoot);
+  matches.sort((a, b) => a.modified - b.modified || a.path.localeCompare(b.path));
+  if (!matches.length) throw new Error(`No Codex session log was found for task ${threadId}.`);
+  return matches.map((match) => match.path);
+}
+
+async function exportImageFromLogs(threadId, outPath) {
+  const logs = findThreadLogs(threadId);
+  let latestBase64 = null;
+  for (const logPath of logs) {
+    const lines = readline.createInterface({ input: fs.createReadStream(logPath, { encoding: "utf8" }), crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (!line.includes("image_generation_end")) continue;
+      try {
+        const item = JSON.parse(line);
+        if (item?.type === "event_msg" && item.payload?.type === "image_generation_end" && typeof item.payload.result === "string") latestBase64 = item.payload.result;
+      } catch { /* ignore unrelated or partially written JSONL lines */ }
+    }
+  }
+  if (!latestBase64) throw new Error(`No generated image was found in Codex task ${threadId}.`);
+  const bytes = Buffer.from(latestBase64, "base64");
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  if (bytes.length <= signature.length || !bytes.subarray(0, signature.length).equals(signature)) throw new Error("Recovered image data is not a valid PNG.");
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, bytes);
+}
+
 async function exportImage(threadId, outPath) {
   const recovery = path.join(process.env.USERPROFILE || "", ".codex", "skills", "codex-image-recovery", "scripts", "export-codex-generated-image.ps1");
-  if (!fs.existsSync(recovery)) throw new Error("The Codex image recovery helper is not installed.");
-  await new Promise((resolve, reject) => {
-    const child = spawn("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", recovery, "-ThreadId", threadId, "-Destination", outPath, "-Force"], { shell: false, windowsHide: true });
-    let errorText = "";
-    child.stderr.on("data", (chunk) => { errorText += chunk; });
-    child.on("error", reject);
-    child.on("close", (code) => code === 0 ? resolve() : reject(new Error(errorText || "Could not recover the generated image.")));
-  });
+  if (process.platform === "win32" && fs.existsSync(recovery)) {
+    await new Promise((resolve, reject) => {
+      const child = spawn("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", recovery, "-ThreadId", threadId, "-Destination", outPath, "-Force"], { shell: false, windowsHide: true });
+      let errorText = "";
+      child.stderr.on("data", (chunk) => { errorText += chunk; });
+      child.on("error", reject);
+      child.on("close", (code) => code === 0 ? resolve() : reject(new Error(errorText || "Could not recover the generated image.")));
+    });
+    return;
+  }
+  await exportImageFromLogs(threadId, outPath);
 }
 
 async function generateImage({ cwd, request, libraryDir, onStatus }) {
@@ -178,4 +253,4 @@ async function generateImage({ cwd, request, libraryDir, onStatus }) {
   return asset;
 }
 
-module.exports = { generateStory, generateImage };
+module.exports = { generateStory, generateImage, exportImageFromLogs };

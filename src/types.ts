@@ -71,6 +71,14 @@ export interface StoryRequest {
   tone: string;
 }
 
+export interface ProjectSummary {
+  id: string;
+  title: string;
+  updatedAt: string;
+  sceneCount: number;
+  current: boolean;
+}
+
 export interface AppInfo {
   version: string;
   releaseDate: string;
@@ -88,8 +96,10 @@ export interface UpdateStatus {
 declare global {
   interface Window {
     astral: {
-      loadProject(): Promise<AnimationProject | null>;
+      loadProject(projectId?: string): Promise<AnimationProject | null>;
       saveProject(project: AnimationProject): Promise<{ savedAt: string }>;
+      listProjects(): Promise<ProjectSummary[]>;
+      deleteProject(projectId: string): Promise<{ nextProject: AnimationProject | null; projects: ProjectSummary[] }>;
       generateStory(request: StoryRequest): Promise<Partial<AnimationProject>>;
       generateImage(request: { name: string; kind: AssetKind; prompt: string }): Promise<LibraryAsset>;
       listAssets(): Promise<LibraryAsset[]>;
