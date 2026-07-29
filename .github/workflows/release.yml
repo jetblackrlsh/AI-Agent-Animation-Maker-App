@@ -1,113 +1,23 @@
-name: Release Windows and Apple Silicon
+name: Delete existing Actions artifacts
 
 on:
-  release:
-    types:
-      - published
+  push:
+    branches:
+      - main
 
 permissions:
-  contents: write
+  actions: write
+  contents: read
 
 jobs:
-  windows-build:
-    runs-on: windows-latest
+  cleanup:
+    runs-on: ubuntu-latest
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.release.tag_name }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Validate production build
-        run: npm run build
-
-      - name: Exercise Windows narration and MIDI pipeline
-        run: node scripts/smoke-audio.cjs
-
-      - name: Build Windows x64 release
-        run: npx electron-builder --win nsis --x64 --publish never
-
-      - name: Attach Windows files to the published release
-        shell: pwsh
+      - name: Delete every active artifact in this repository
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload $env:RELEASE_TAG dist/Astral-Director-Setup-*.exe dist/Astral-Director-Setup-*.exe.blockmap dist/latest.yml --clobber --repo $env:GITHUB_REPOSITORY
-
-      - name: Keep a temporary Windows Actions copy
-        uses: actions/upload-artifact@v4
-        with:
-          name: Astral-Director-Windows-${{ github.event.release.tag_name }}
-          if-no-files-found: error
-          retention-days: 3
-          path: |
-            dist/Astral-Director-Setup-*.exe
-            dist/Astral-Director-Setup-*.exe.blockmap
-            dist/latest.yml
-
-  macos-arm64-build:
-    runs-on: macos-15
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.release.tag_name }}
-
-      - name: Confirm native Apple Silicon runner
         run: |
-          test "$(uname -m)" = "arm64"
-          system_profiler SPHardwareDataType | grep "Chip"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Validate production build
-        run: npm run build
-
-      - name: Exercise macOS narration and MIDI pipeline
-        run: node scripts/smoke-audio.cjs
-
-      - name: Build native Apple Silicon DMG and updater ZIP
-        run: npx electron-builder --mac dmg zip --arm64 --publish never
-
-      - name: Verify packaged architecture and signature
-        run: |
-          APP="dist/mac-arm64/Astral Director.app"
-          test -d "$APP"
-          file "$APP/Contents/MacOS/Astral Director" | grep "arm64"
-          test "$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")" = "${GITHUB_REF_NAME#v}"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          test -f dist/latest-mac.yml
-
-      - name: Attach Apple Silicon files to the published release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" dist/Astral-Director-*-mac-arm64.dmg dist/Astral-Director-*-mac-arm64.dmg.blockmap dist/Astral-Director-*-mac-arm64.zip dist/Astral-Director-*-mac-arm64.zip.blockmap dist/latest-mac.yml --clobber --repo "$GITHUB_REPOSITORY"
-
-      - name: Keep a temporary Apple Silicon Actions copy
-        uses: actions/upload-artifact@v4
-        with:
-          name: Astral-Director-macOS-arm64-${{ github.event.release.tag_name }}
-          if-no-files-found: error
-          retention-days: 3
-          path: |
-            dist/Astral-Director-*-mac-arm64.dmg
-            dist/Astral-Director-*-mac-arm64.dmg.blockmap
-            dist/Astral-Director-*-mac-arm64.zip
-            dist/Astral-Director-*-mac-arm64.zip.blockmap
-            dist/latest-mac.yml
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .id' |
+            while read -r artifact_id; do
+              gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+            done
