@@ -1,9 +1,10 @@
 name: Release Windows and Apple Silicon
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types:
+      - published
+
 permissions:
   contents: write
 
@@ -13,6 +14,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -32,11 +35,19 @@ jobs:
       - name: Build Windows x64 release
         run: npx electron-builder --win nsis --x64 --publish never
 
-      - name: Upload Windows release files
+      - name: Attach Windows files to the published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload $env:RELEASE_TAG dist/Astral-Director-Setup-*.exe dist/Astral-Director-Setup-*.exe.blockmap dist/latest.yml --clobber --repo $env:GITHUB_REPOSITORY
+
+      - name: Keep a temporary Windows Actions copy
         uses: actions/upload-artifact@v4
         with:
-          name: windows-release
+          name: Astral-Director-Windows-${{ github.event.release.tag_name }}
           if-no-files-found: error
+          retention-days: 3
           path: |
             dist/Astral-Director-Setup-*.exe
             dist/Astral-Director-Setup-*.exe.blockmap
@@ -47,6 +58,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Confirm native Apple Silicon runner
         run: |
@@ -80,35 +93,21 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           test -f dist/latest-mac.yml
 
-      - name: Upload Apple Silicon release files
+      - name: Attach Apple Silicon files to the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/Astral-Director-*-mac-arm64.dmg dist/Astral-Director-*-mac-arm64.dmg.blockmap dist/Astral-Director-*-mac-arm64.zip dist/Astral-Director-*-mac-arm64.zip.blockmap dist/latest-mac.yml --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Keep a temporary Apple Silicon Actions copy
         uses: actions/upload-artifact@v4
         with:
-          name: macos-arm64-release
+          name: Astral-Director-macOS-arm64-${{ github.event.release.tag_name }}
           if-no-files-found: error
+          retention-days: 3
           path: |
             dist/Astral-Director-*-mac-arm64.dmg
             dist/Astral-Director-*-mac-arm64.dmg.blockmap
             dist/Astral-Director-*-mac-arm64.zip
             dist/Astral-Director-*-mac-arm64.zip.blockmap
             dist/latest-mac.yml
-
-  publish-release:
-    needs: [windows-build, macos-arm64-build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download verified release files
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Create synchronized GitHub release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Astral Director ${GITHUB_REF_NAME#v}" \
-            --generate-notes \
-            release-assets/*
